@@ -37,6 +37,7 @@ namespace genny::actor {
  *   Type: MoveRandomChunkToRandomShard
  *   Phases:
  *   - Namespace: test.coll
+ *     ForceJumbo: true # optional
  *
  * ```
  *
@@ -56,6 +57,13 @@ public:
 private:
     mongocxx::pool::entry _client;
     genny::DefaultRandom& _rng;
+
+    metrics::Operation _totalMoveChunk;
+    metrics::Operation _totalDonorChunkCloneTimeMillis;
+    metrics::Operation _totalCriticalSectionCommitTimeMillis;
+    metrics::Operation _totalCriticalSectionTimeMillis;
+    metrics::Operation _totalCriticalSectionCSWriteTimeMillis;
+    metrics::Operation _totalCriticalSectionRefreshTimeMillis;
 
     struct PhaseConfig;
     PhaseLoop<PhaseConfig> _loop;

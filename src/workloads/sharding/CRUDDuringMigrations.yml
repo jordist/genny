@@ -1,0 +1,760 @@
+SchemaVersion: 2018-07-01
+Owner: "@mongodb/sharding"
+Description: |
+  Runs the moveChunk command while read and write operations are active on the collection.
+
+  The workload consists of 9 phases:
+    1. Set chunk size to 32mb
+    2. Enable sharding and create collection0 as a sharded collection
+    3. Add data to collection0
+    4. CRUD operations before migrations to stablish a base
+    5. CRUD during migrations at 32mb
+    6. Drop collection0 and increase chunk size to 64mb
+    7. Create collection1 as a sharded collection
+    8. Add data to collection1
+    9. CRUD during migrations at 64mb
+    10. Drop collection1 and increase chunk size to 128mb 
+    11 Create collection2 as a sharded collection
+    12. Add data to collection2
+    13. CRUD during migrations at 128mb
+    14. Drop collection2 and increase chunk size to 256mb
+    15. Create collection3 as a sharded collection
+    16. Add data to collection3
+    17. CRUD during migrations at 256mb
+    18. Drop collection3 and increase chunk size to 512mb
+    19. Create collection4 as a sharded collection
+    20. Add data to collection4
+    21. CRUD during migrations at 512mb
+
+  The inserted documents have the following form:
+
+      {_id: 10, Key: 30, counter: 0, padding: 'random string of bytes ...'}
+
+  The collection is sharded on {Key: 1}.
+
+GlobalDefaults:
+  Nop: &Nop {Nop: true}
+
+  Database: &Database test
+  Collection0: &Collection0 Collection0
+  Namespace0: &Namespace0 test.Collection0
+  Collection1: &Collection1 Collection1
+  Namespace1: &Namespace1 test.Collection1
+  Collection2: &Collection2 Collection2
+  Namespace2: &Namespace2 test.Collection2
+  Collection3: &Collection3 Collection3
+  Namespace3: &Namespace3 test.Collection3
+  Collection4: &Collection4 Collection4
+  Namespace4: &Namespace4 test.Collection4
+
+  NumChunks32MB: &NumChunks32MB 60000
+  NumChunks64MB: &NumChunks64MB 30000
+  NumChunks128MB: &NumChunks128MB 15000
+  NumChunks256MB: &NumChunks256MB 7500
+  NumChunks512MB: &NumChunks512MB 3750
+  NumMigrationsPerPhase: &NumMigrationsPerPhase 100
+  DocumentSize: &DocumentSize 1000
+  ShardKeyValueMin: &ShardKeyValueMin -2147483648
+  ShardKeyValueMax: &ShardKeyValueMax 2147483647
+  DocumentCount: &DocumentCount 8000000
+Clients:
+  Default:
+    QueryOptions:
+      maxPoolSize: 351
+  # Only one connection is needed in order to change the chunk size
+  ChangeChunkSizeClient:
+    QueryOptions:
+      maxPoolSize: 1
+  ShardCollection:
+    QueryOptions:
+      maxPoolSize: 1
+      socketTimeoutMS: 36000000  # = 10 hours
+  # The moveChunk command is expected to take a long to complete so we give the actor
+  # running it a much higher socket timeout.
+  MoveChunk:
+    QueryOptions:
+      maxPoolSize: 1
+      socketTimeoutMS: 3600000  # = 1 hour
+
+Actors:
+- Name: CreateShardedCollections
+  Type: AdminCommand
+  Threads: 1
+  ClientName: ShardCollection
+  Phases:
+  - *Nop
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        balancerStop: 1
+    - OperationName: AdminCommand
+      OperationCommand:
+        enableSharding: *Database
+    - OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace0
+        key: {Key: 'hashed'}
+        numInitialChunks: *NumChunks32MB
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace1
+        key: {Key: 'hashed'}
+        numInitialChunks: *NumChunks64MB
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace2
+        key: {Key: 'hashed'}
+        numInitialChunks: *NumChunks128MB
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace3
+        key: {Key: 'hashed'}
+        numInitialChunks: *NumChunks256MB
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace4
+        key: {Key: 'hashed'}
+        numInitialChunks: *NumChunks512MB
+  - *Nop
+  - *Nop
+
+- Name: ChangeChunkSize
+  Type: CrudActor
+  Threads: 1
+  ClientName: ChangeChunkSizeClient
+  Database: config
+  Phases:
+  - Repeat: 1
+    Collection: settings
+    Blocking: None
+    Operations:
+      - OperationName: deleteOne
+        OperationCommand:
+          Filter: {_id: chunksize}
+      - OperationName: insertOne
+        OperationCommand:
+          Document:
+            _id: chunksize
+            value: 32
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Collection: settings
+    Blocking: None
+    Operations:
+      - OperationName: deleteOne
+        OperationCommand:
+          Filter: {_id: chunksize}
+      - OperationName: insertOne
+        OperationCommand:
+          Document:
+            _id: chunksize
+            value: 64
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Collection: settings
+    Blocking: None
+    Operations:
+      - OperationName: deleteOne
+        OperationCommand:
+          Filter: {_id: chunksize}
+      - OperationName: insertOne
+        OperationCommand:
+          Document:
+            _id: chunksize
+            value: 128
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Collection: settings
+    Blocking: None
+    Operations:
+      - OperationName: deleteOne
+        OperationCommand:
+          Filter: {_id: chunksize}
+      - OperationName: insertOne
+        OperationCommand:
+          Document:
+            _id: chunksize
+            value: 256
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Collection: settings
+    Blocking: None
+    Operations:
+      - OperationName: deleteOne
+        OperationCommand:
+          Filter: {_id: chunksize}
+      - OperationName: insertOne
+        OperationCommand:
+          Document:
+            _id: chunksize
+            value: 512
+  - *Nop
+  - *Nop
+  - *Nop
+
+- Name: CleanUp
+  Type: RunCommand
+  Threads: 1
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: *Database
+    Operations:
+    - OperationName: RunCommand
+      OperationCommand:
+        drop: *Collection0
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: *Database
+    Operations:
+    - OperationName: RunCommand
+      OperationCommand:
+        drop: *Collection1
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: *Database
+    Operations:
+    - OperationName: RunCommand
+      OperationCommand:
+        drop: *Collection2
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    Database: *Database
+    Operations:
+    - OperationName: RunCommand
+      OperationCommand:
+        drop: *Collection3
+  - *Nop
+  - *Nop
+  - *Nop
+
+- Name: LoadInitialData
+  Type: MonotonicSingleLoader
+  Threads: 100
+  Phases:
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    Document:
+      Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      counter: 0
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    collectionBaseOffset: 1
+    Document:
+      Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      counter: 0
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    collectionBaseOffset: 2
+    Document:
+      Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      counter: 0
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    collectionBaseOffset: 3
+    Document:
+      Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      counter: 0
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    collectionBaseOffset: 4
+    Document:
+      Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      counter: 0
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+
+- Name: MoveChunk
+  Type: MoveRandomChunkToRandomShard
+  Threads: 1
+  ClientName: MoveChunk
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 32MBChunkMigrations
+    Repeat: *NumMigrationsPerPhase
+    Namespace: *Namespace0
+    ThrowOnFailure: false
+    ForceJumbo: true
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 64MBChunkMigrations
+    Repeat: *NumMigrationsPerPhase
+    Namespace: *Namespace1
+    ThrowOnFailure: false
+    ForceJumbo: true
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 128MBChunkMigrations
+    Repeat: *NumMigrationsPerPhase
+    Namespace: *Namespace2
+    ThrowOnFailure: false
+    ForceJumbo: true
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 256MBChunkMigrations
+    Repeat: *NumMigrationsPerPhase
+    Namespace: *Namespace3
+    ThrowOnFailure: false
+    ForceJumbo: true
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 512MBChunkMigrations
+    Repeat: *NumMigrationsPerPhase
+    Namespace: *Namespace4
+    ThrowOnFailure: false
+    ForceJumbo: true
+
+- Name: Read
+  Type: CrudActor
+  Threads: 50
+  Database: *Database
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: BeforeMigrations
+    Blocking: None
+    Collection: *Collection0
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+  - MetricsName: 32MBChunkReadOps
+    Blocking: None
+    Collection: *Collection0
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 64MBChunkReadOps
+    Blocking: None
+    Collection: *Collection1
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 128MBChunkReadOps
+    Blocking: None
+    Collection: *Collection2
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 256MBChunkReadOps
+    Blocking: None
+    Collection: *Collection3
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 512MBChunkReadOps
+    Blocking: None
+    Collection: *Collection4
+    Operation:
+      OperationName: findOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+
+- Name: Insert
+  Type: CrudActor
+  Threads: 50
+  Database: *Database
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: BeforeMigrations
+    Blocking: None
+    Collection: *Collection0
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+  - MetricsName: 32MBChunkInsertOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection0
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 64MBChunkInsertOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection1
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 128MBChunkInsertOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection2
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 256MBChunkInsertOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection3
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 512MBChunkInsertOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection4
+    Operation:
+      OperationName: insertOne
+      OperationCommand:
+        Document:
+          Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+          counter: 0
+          padding: {^FastRandomString: {length: *DocumentSize}}
+
+- Name: Update
+  Type: CrudActor
+  Threads: 50
+  Database: *Database
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: BeforeMigrations
+    Blocking: None
+    Collection: *Collection0
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+  - MetricsName: 32MBChunkUpdateOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection0
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 64MBChunkUpdateOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection1
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 128MBChunkUpdateOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection2
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 256MBChunkUpdateOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection3
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 512MBChunkUpdateOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection4
+    Operation:
+      OperationName: updateOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: 1, max: *DocumentCount}}}
+        Update: {$inc: {counter: 1}}
+
+- Name: Delete
+  Type: CrudActor
+  Threads: 50
+  Database: *Database
+  Phases:
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: BeforeMigrations
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection0
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+  - MetricsName: 32MBChunkDeleteOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection0
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 64MBChunkDeleteOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection1
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 128MBChunkDeleteOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection2
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 256MBChunkDeleteOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection3
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+  - *Nop
+  - *Nop
+  - *Nop
+  - MetricsName: 512MBChunkDeleteOps
+    Blocking: None
+    ThrowOnFailure: false
+    Collection: *Collection4
+    Operation:
+      OperationName: deleteOne
+      OperationCommand:
+        Filter: {Key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}}
+
+# Guard against timeout for no output.
+- Name: LoggingActor
+  Type: LoggingActor
+  Threads: 1
+  Phases:
+  - Phase: 0
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 1
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 2
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 3
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 4
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 5
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 6
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 7
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 8
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 9
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 10
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 11
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 12
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 13
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 14
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 15
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 16
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 17
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 18
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 19
+    LogEvery: 1 minutes
+    Blocking: None
+  - Phase: 20
+    LogEvery: 1 minutes
+    Blocking: None
+
+AutoRun:
+- When:
+    mongodb_setup:
+      $eq:
+      - shard
+    branch_name:
+      $neq:
+      - v4.0
+      - v4.2
+      - v4.4
+
