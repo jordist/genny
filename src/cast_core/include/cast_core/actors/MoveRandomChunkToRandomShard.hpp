@@ -64,6 +64,7 @@ private:
     metrics::Operation _totalCriticalSectionTimeMillis;
     metrics::Operation _totalCriticalSectionCSWriteTimeMillis;
     metrics::Operation _totalCriticalSectionRefreshTimeMillis;
+    metrics::Operation _totalRecipientCriticalSectionTimeMillis;
 
     struct PhaseConfig;
     PhaseLoop<PhaseConfig> _loop;

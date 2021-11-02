@@ -63,10 +63,33 @@ void setRecipientRangeDeletionWaitTimeout(const mongocxx::database& configDataba
     }
 }
 
+bsoncxx::document::value getServerStatus(mongocxx::pool::entry& client,
+                                         const std::string& shardId) {
+    using bsoncxx::builder::basic::kvp;
+    using bsoncxx::builder::basic::make_document;
+
+    auto&& configDatabase = client->database("config");
+    auto shardOpt = configDatabase["shards"].find_one(make_document(kvp("_id", shardId)));
+    assert(shardOpt.is_initialized());
+    const std::string fullHost = shardOpt.get().view()["host"].get_utf8().value.to_string();
+
+    std::stringstream mongoURI;
+    mongoURI << "mongodb://" << fullHost.substr(fullHost.find("/") + 1);
+
+    mongocxx::client shardClient(mongocxx::uri(mongoURI.str()));
+
+    auto serverStatus =
+        shardClient.database("admin").run_command(make_document(kvp("serverStatus", 1)));
+    return serverStatus;
+}
+
 void MoveRandomChunkToRandomShard::run() {
+    uint64_t iteration = 0;
     setRecipientRangeDeletionWaitTimeout(_client->database("config"));
     for (auto&& config : _loop) {
         for (const auto&& _ : config) {
+            iteration++;
+
             auto&& configDatabase = _client->database("config");
             // Get the collection uuid.
             bsoncxx::document::value collectionFilter = bsoncxx::builder::stream::document()
@@ -133,24 +156,22 @@ void MoveRandomChunkToRandomShard::run() {
                 << chunk["max"].get_value() << bsoncxx::builder::stream::close_array
                 << bsoncxx::builder::stream::finalize;
             BOOST_LOG_TRIVIAL(info)
-                << "MoveChunkToRandomShardActor moving chunk " << bsoncxx::to_json(bounds.view())
+                << "MoveChunkToRandomShardActor (iteration " << iteration << ") "
+                << "moving chunk " << bsoncxx::to_json(bounds.view())
                 << " from: " << chunk["shard"].get_utf8().value.to_string()
                 << " to: " << shard["_id"].get_utf8().value.to_string();
 
-            bsoncxx::document::value serverStatusDocument = bsoncxx::builder::stream::document()
-                << "serverStatus" << 1 << bsoncxx::builder::stream::finalize;
-            bsoncxx::document::value donorShardFilter = bsoncxx::builder::stream::document()
-                << "_id" << chunk["shard"].get_utf8() << bsoncxx::builder::stream::finalize;
-            auto shardOpt = configDatabase["shards"].find_one(donorShardFilter.view());
-            assert(shardOpt.is_initialized());
-            std::string fullHost = shardOpt.get().view()["host"].get_utf8().value.to_string();
-            std::stringstream mongoURI;
-            mongoURI << "mongodb://" << fullHost.substr(fullHost.find("/") + 1);
-            mongocxx::client shardClient(mongocxx::uri(mongoURI.str()));
-            auto beforeMigrationServerStatus =
-                shardClient.database("admin").run_command(serverStatusDocument.view());
-            auto beforeMigrationShardingStatistics =
-                beforeMigrationServerStatus.view()["shardingStatistics"];
+            const std::string donorShardId = chunk["shard"].get_utf8().value.to_string();
+            const std::string recipientShardId = shard["_id"].get_utf8().value.to_string();
+
+            const auto beforeMigrationDonorServerStatus = getServerStatus(_client, donorShardId);
+            auto beforeMigrationDonorShardingStatistics =
+                beforeMigrationDonorServerStatus.view()["shardingStatistics"];
+
+            const auto beforeMigrationRecipientServerStatus =
+                getServerStatus(_client, recipientShardId);
+            const auto beforeMigrationRecipientShardingStatistics =
+                beforeMigrationRecipientServerStatus.view()["shardingStatistics"];
 
             auto totalOpCtx = _totalMoveChunk.start();
             try {
@@ -158,44 +179,49 @@ void MoveRandomChunkToRandomShard::run() {
                 totalOpCtx.success();
 
                 // Get move chunk statistics.
-                auto serverStatus =
-                    shardClient.database("admin").run_command(serverStatusDocument.view());
-                auto shardingStatistics = serverStatus.view()["shardingStatistics"];
+                const auto donorServerStatus = getServerStatus(_client, donorShardId);
+                const auto donorShardingStatistics = donorServerStatus.view()["shardingStatistics"];
+
+                const auto recipientServerStatus = getServerStatus(_client, recipientShardId);
+                const auto recipientShardingStatistics =
+                    recipientServerStatus.view()["shardingStatistics"];
+
                 auto now = metrics::clock::now();
                 _totalDonorChunkCloneTimeMillis.report(
                     now,
                     std::chrono::microseconds(
-                        shardingStatistics["totalDonorChunkCloneTimeMillis"].get_int64() -
-                        beforeMigrationShardingStatistics["totalDonorChunkCloneTimeMillis"]
+                        donorShardingStatistics["totalDonorChunkCloneTimeMillis"].get_int64() -
+                        beforeMigrationDonorShardingStatistics["totalDonorChunkCloneTimeMillis"]
                             .get_int64()),
                     metrics::OutcomeType::kSuccess);
                 _totalCriticalSectionCommitTimeMillis.report(
                     now,
                     std::chrono::microseconds(
-                        shardingStatistics["totalCriticalSectionCommitTimeMillis"].get_int64() -
-                        beforeMigrationShardingStatistics["totalCriticalSectionCommitTimeMillis"]
-                            .get_int64()),
+                        donorShardingStatistics["totalCriticalSectionCommitTimeMillis"]
+                            .get_int64() -
+                        beforeMigrationDonorShardingStatistics
+                            ["totalCriticalSectionCommitTimeMillis"]
+                                .get_int64()),
                     metrics::OutcomeType::kSuccess);
                 _totalCriticalSectionTimeMillis.report(
                     now,
                     std::chrono::microseconds(
-                        shardingStatistics["totalCriticalSectionTimeMillis"].get_int64() -
-                        beforeMigrationShardingStatistics["totalCriticalSectionTimeMillis"]
+                        donorShardingStatistics["totalCriticalSectionTimeMillis"].get_int64() -
+                        beforeMigrationDonorShardingStatistics["totalCriticalSectionTimeMillis"]
                             .get_int64()),
                     metrics::OutcomeType::kSuccess);
-                _totalCriticalSectionCSWriteTimeMillis.report(
+
+                // Require SERVER-60984
+                assert(recipientShardingStatistics["totalRecipientCriticalSectionTimeMillis"]);
+
+                _totalRecipientCriticalSectionTimeMillis.report(
                     now,
                     std::chrono::microseconds(
-                        shardingStatistics["totalCriticalSectionCSWriteTimeMillis"].get_int64() -
-                        beforeMigrationShardingStatistics["totalCriticalSectionCSWriteTimeMillis"]
-                            .get_int64()),
-                    metrics::OutcomeType::kSuccess);
-                _totalCriticalSectionRefreshTimeMillis.report(
-                    now,
-                    std::chrono::microseconds(
-                        shardingStatistics["totalCriticalSectionRefreshTimeMillis"].get_int64() -
-                        beforeMigrationShardingStatistics["totalCriticalSectionRefreshTimeMillis"]
-                            .get_int64()),
+                        recipientShardingStatistics["totalRecipientCriticalSectionTimeMillis"]
+                            .get_int64() -
+                        beforeMigrationRecipientShardingStatistics
+                            ["totalRecipientCriticalSectionTimeMillis"]
+                                .get_int64()),
                     metrics::OutcomeType::kSuccess);
             } catch (mongocxx::operation_exception& e) {
                 BOOST_LOG_TRIVIAL(info) << "A move chunk failed: " << e.what();
@@ -210,6 +236,8 @@ void MoveRandomChunkToRandomShard::run() {
                 _totalCriticalSectionCSWriteTimeMillis.report(
                     now, std::chrono::microseconds(0), metrics::OutcomeType::kFailure);
                 _totalCriticalSectionRefreshTimeMillis.report(
+                    now, std::chrono::microseconds(0), metrics::OutcomeType::kFailure);
+                _totalRecipientCriticalSectionTimeMillis.report(
                     now, std::chrono::microseconds(0), metrics::OutcomeType::kFailure);
             }
         }
@@ -231,7 +259,9 @@ MoveRandomChunkToRandomShard::MoveRandomChunkToRandomShard(genny::ActorContext& 
       _totalCriticalSectionCSWriteTimeMillis{context.operation(
           "totalCriticalSectionCSWriteTimeMillis", MoveRandomChunkToRandomShard::id())},
       _totalCriticalSectionRefreshTimeMillis{context.operation(
-          "totalCriticalSectionRefreshTimeMillis", MoveRandomChunkToRandomShard::id())} {}
+          "totalCriticalSectionRefreshTimeMillis", MoveRandomChunkToRandomShard::id())},
+      _totalRecipientCriticalSectionTimeMillis{context.operation(
+          "totalRecipientCriticalSectionTimeMillis", MoveRandomChunkToRandomShard::id())} {}
 
 namespace {
 //
