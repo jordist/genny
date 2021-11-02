@@ -51,7 +51,8 @@ struct MonotonicLoader::PhaseConfig {
           numDocuments{context["DocumentCount"].to<IntegerSpec>()},
           batchSize{context["BatchSize"].to<IntegerSpec>()},
           documentExpr{context["Document"].to<DocumentGenerator>(context, id)},
-          collectionOffset{numCollections * thread} {
+          collectionOffset{numCollections * thread},
+          collectionBaseOffset{context["collectionBaseOffset"].maybe<int64_t>().value_or(0)} {
         auto& indexNodes = context["Indexes"];
         for (auto [k, indexNode] : indexNodes) {
             indexes.emplace_back(indexNode["keys"].to<DocumentGenerator>(context, id),
@@ -70,13 +71,14 @@ struct MonotonicLoader::PhaseConfig {
     DocumentGenerator documentExpr;
     std::vector<index_type> indexes;
     int64_t collectionOffset;
+    int64_t collectionBaseOffset;
 };
 
 void genny::actor::MonotonicLoader::run() {
     for (auto&& config : _loop) {
         for (auto&& _ : config) {
-            for (uint i = config->collectionOffset;
-                 i < config->collectionOffset + config->numCollections;
+            for (uint i = config->collectionOffset + config->collectionBaseOffset;
+                 i < config->collectionOffset + config->collectionBaseOffset + config->numCollections;
                  i++) {
                 auto collectionName = "Collection" + std::to_string(i);
                 auto collection = config->database[collectionName];

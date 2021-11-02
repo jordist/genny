@@ -1,0 +1,104 @@
+SchemaVersion: 2018-07-01
+Owner: "@mongodb/sharding"
+Description: |
+  TODO
+
+GlobalDefaults:
+  Nop: &Nop {Nop: true}
+
+  Database: &Database test
+  Collection: &Collection Collection0
+  Namespace: &Namespace test.Collection0
+
+  NumChunks: &NumChunks 1000
+  NumMigrations: &NumMigrations 1000
+  DocumentSize: &DocumentSize 1000
+  ShardKeyValueMin: &ShardKeyValueMin -2147483648
+  ShardKeyValueMax: &ShardKeyValueMax 2147483647
+  DocumentCount: &DocumentCount 0
+Clients:
+  Default:
+    QueryOptions:
+      maxPoolSize: 351
+  # Only one connection is needed in order to change the chunk size
+  ChangeChunkSizeClient:
+    QueryOptions:
+      maxPoolSize: 1
+  ShardCollection:
+    QueryOptions:
+      maxPoolSize: 1
+      socketTimeoutMS: 36000000  # = 10 hours
+  # The moveChunk command is expected to take a long to complete so we give the actor
+  # running it a much higher socket timeout.
+  MoveChunk:
+    QueryOptions:
+      maxPoolSize: 1
+      socketTimeoutMS: 3600000  # = 1 hour
+
+Actors:
+- Name: CreateShardedCollection
+  Type: AdminCommand
+  Threads: 1
+  ClientName: ShardCollection
+  Phases:
+  - Repeat: 1
+    Database: admin
+    Operations:
+    - OperationName: AdminCommand
+      OperationCommand:
+        balancerStop: 1
+    - OperationMetricsName: EnableSharding
+      OperationName: AdminCommand
+      OperationCommand:
+        enableSharding: *Database
+    - OperationMetricsName: ShardCollection
+      OperationName: AdminCommand
+      OperationCommand:
+        shardCollection: *Namespace
+        key: {key: 'hashed'}
+        numInitialChunks: *NumChunks
+  - *Nop
+  - *Nop
+
+- Name: LoadInitialData
+  Type: MonotonicSingleLoader
+  Threads: 100
+  Phases:
+  - *Nop
+  - Repeat: 1
+    BatchSize: 1000
+    DocumentCount: *DocumentCount
+    Database: *Database
+    Collection: *Collection
+    Document:
+      key: {^RandomInt: {min: *ShardKeyValueMin, max: *ShardKeyValueMax}}
+      padding: {^FastRandomString: {length: *DocumentSize}}
+  - *Nop
+
+- Name: MoveChunk
+  Type: MoveRandomChunkToRandomShard
+  Threads: 1
+  ClientName: MoveChunk
+  Phases:
+  - *Nop
+  - *Nop
+  - MetricsName: ChunkMigrations
+    Repeat: *NumMigrations
+    Namespace: *Namespace
+    ThrowOnFailure: false
+    ForceJumbo: true
+
+AutoRun:
+- When:
+    mongodb_setup:
+      $eq:
+      - shard
+      - shard-lite
+      - shard-lite-all-feature-flags
+    branch_name:
+      $neq:
+      - v4.0
+      - v4.2
+      - v4.4
+
+
