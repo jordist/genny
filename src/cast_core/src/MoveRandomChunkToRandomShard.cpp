@@ -70,7 +70,8 @@ void MoveRandomChunkToRandomShard::run() {
                     << bsoncxx::builder::stream::finalize;
                 auto numChunks = configDatabase["chunks"].count_documents(chunksFilter.view());
                 // The collection must have been sharded and must have at least one chunk;
-                boost::random::uniform_int_distribution<int64_t> chunkUniformDistribution(0, (int)numChunks - 1);
+                boost::random::uniform_int_distribution<int64_t> chunkUniformDistribution(
+                    0, (int)numChunks - 1);
                 mongocxx::options::find chunkFindOptions;
                 auto chunkSort = bsoncxx::builder::stream::document()
                     << "lastmod" << 1 << bsoncxx::builder::stream::finalize;
@@ -91,7 +92,8 @@ void MoveRandomChunkToRandomShard::run() {
                 bsoncxx::document::value shardFilter = bsoncxx::builder::stream::document()
                     << "_id" << notEqualDoc.view() << bsoncxx::builder::stream::finalize;
                 auto numShards = configDatabase["shards"].count_documents(shardFilter.view());
-                boost::random::uniform_int_distribution<int64_t> shardUniformDistribution(0, (int)numShards - 1);
+                boost::random::uniform_int_distribution<int64_t> shardUniformDistribution(
+                    0, (int)numShards - 1);
                 mongocxx::options::find shardFindOptions;
                 auto shardSort = bsoncxx::builder::stream::document()
                     << "_id" << 1 << bsoncxx::builder::stream::finalize;
@@ -118,7 +120,12 @@ void MoveRandomChunkToRandomShard::run() {
                                         << bsoncxx::to_json(bounds.view())
                                         << " from: " << chunk["shard"].get_utf8().value.to_string()
                                         << " to: " << shard["_id"].get_utf8().value.to_string();
-                _client->database("admin").run_command(moveChunkCmd.view());
+                try {
+                    _client->database("admin").run_command(moveChunkCmd.view());
+                } catch (mongocxx::operation_exception& e) {
+                    // May fail because it tries to move a chunk that was already moved recently and
+                    // whose range deletion has not completed yet.
+                }
             } catch (mongocxx::operation_exception& e) {
                 BOOST_THROW_EXCEPTION(MongoException(
                     e,
